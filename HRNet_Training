@@ -1,0 +1,101 @@
+# [20230809] Edited by Xuenan
+
+import os
+import pathlib
+import tensorflow as tf
+from scipy.io import loadmat as load
+import numpy as np
+from matplotlib import pyplot as plt
+from tensorboard.plugins.graph import graph_util
+import tensorflow_probability as tfp
+
+#----------------------------Load Data--------------------------
+dataset_MMSE = load('Dataset/Dataset_MMSE_STMAP_noise.mat')
+dataset_PURE = load('Dataset/Dataset_PURE_STMAP_noise.mat')
+dataset_UBFC = load('Dataset/Dataset_UBFC_STMAP_noise.mat')
+bvp_MMSE = dataset_MMSE['bvp_map_set_MMSE']
+hr_MMSE = dataset_MMSE['hr_map_set_MMSE']
+bvp_PURE = dataset_PURE['bvp_map_set_PURE']
+hr_PURE = dataset_PURE['hr_map_set_PURE']
+bvp_UBFC = dataset_UBFC['bvp_map_set_UBFC']
+hr_UBFC = dataset_UBFC['hr_map_set_UBFC']
+bvp_MMSE = tf.concat([bvp_MMSE,bvp_MMSE[0:1,:,:]],axis=0)
+hr_MMSE = tf.concat([hr_MMSE,tf.expand_dims(hr_MMSE[0],axis=1)],axis=0)
+bvp_MMSE = tf.expand_dims(bvp_MMSE,3)
+bvp_PURE = tf.expand_dims(bvp_PURE,3)
+bvp_UBFC = tf.expand_dims(bvp_UBFC,3)
+
+#--------------Establish the Training and Testing Dataset----------------------
+training_x = tf.concat([bvp_PURE,bvp_UBFC],axis=0)
+training_y = tf.concat([hr_PURE,hr_UBFC],axis=0)
+testing_x = bvp_MMSE
+testing_y = hr_MMSE
+
+# Change the heart rate label to one-hot version
+training_y = tf.squeeze(tf.cast(training_y, dtype=tf.int32))
+training_y = tf.one_hot(training_y, depth=900).numpy()
+testing_y = tf.squeeze(tf.cast(testing_y, dtype=tf.int32))
+testing_y = tf.one_hot(testing_y, depth=900).numpy()
+training_x=training_x[:,0:30,:,:]
+testing_x=testing_x[:,0:30,:,:]
+
+# split the dataset into minibatch for training
+batch_size=20
+train_size=300
+train_dataset = tf.data.Dataset.from_tensor_slices((training_x, training_y))
+train_dataset = train_dataset.take(train_size).shuffle(buffer_size=train_size).batch(batch_size)
+print(train_dataset)
+test_dataset = tf.data.Dataset.from_tensor_slices((testing_x, testing_y))
+test_dataset = test_dataset.batch(batch_size)
+
+#----------------------------------------design FFT layer of HRNet-------------------------
+def fftlayer_hr(x):
+    x = x - tf.expand_dims(tf.reduce_mean(x, axis=1),axis=1)
+    x = tf.concat([x,tf.zeros_like(x),tf.zeros_like(x),tf.zeros_like(x[:,0:24])],axis=1) #PADDING后有一些点没了，要补上
+    spec = tf.math.abs(tf.signal.rfft(x))
+    spec = tf.concat([tf.zeros_like(spec[:,0:50]),spec[:,50:280],tf.zeros_like(spec[:,280:spec.shape[1]-1])],axis=1)    
+    return spec
+
+#----------------------------------------design loss function-------------------------
+def negative_loglikelihood(targets, estimated_distribution):
+    return -estimated_distribution.log_prob(targets)
+    # loss = tf.abs(estimated_distribution.mean()-targets)
+    # return loss
+
+
+#----------------------------Model Structure--------------------------
+input_bvp = tf.keras.Input(shape=[training_x.shape[1],training_x.shape[2],1])
+x = input_bvp
+x = tf.keras.layers.BatchNormalization()(x)
+x = tfp.layers.Convolution2DReparameterization(filters=64, kernel_size=[3,3], padding='valid')(x)
+x = tf.keras.layers.BatchNormalization()(x)
+x = tf.keras.layers.Activation('sigmoid')(x)
+x = tfp.layers.Convolution2DReparameterization(filters=32, kernel_size=[3,3], padding='valid')(x)
+x = tf.keras.layers.BatchNormalization()(x)
+x = tf.keras.layers.Activation('sigmoid')(x)
+x = tfp.layers.Convolution2DReparameterization(filters=16, kernel_size=[3,3], padding='valid')(x)
+x = tf.keras.layers.BatchNormalization()(x)
+x = tf.keras.layers.Activation('sigmoid')(x)
+x = tfp.layers.Convolution2DReparameterization(filters=1, kernel_size=[3,3], padding='valid')(x)
+x = tf.keras.layers.AveragePooling2D(pool_size=(x.shape[1], 1), padding='valid')(x)
+x = tf.keras.layers.Flatten()(x)
+x = tf.keras.layers.Lambda(fftlayer_hr)(x)
+# x = tfp.layers.OneHotCategorical(900)(x)
+
+model_real = tf.keras.Model(inputs=input_bvp, outputs=x)
+model_real.summary()
+model_real.compile(optimizer=tf.keras.optimizers.RMSprop(learning_rate=0.01),
+              loss = tf.keras.losses.CategoricalCrossentropy(),
+              # loss=negative_loglikelihood,
+              )
+
+history = model_real.fit(train_dataset, epochs=100, validation_data=test_dataset, verbose=1)
+
+# plot the loss cureve
+loss = history.history['loss']
+val_loss = history.history['val_loss']  # 验证集loss曲线
+plt.plot(loss, label='Training Loss')
+plt.plot(val_loss, label='Validation Loss')
+plt.title('Training and Validation Loss')
+plt.legend()
+plt.show()
