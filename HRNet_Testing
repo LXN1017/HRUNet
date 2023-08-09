@@ -1,0 +1,49 @@
+# function used for compute uncertainty based on the spectrum
+def fre_uncertianty (spec):
+    fre_window = 3
+    fre_peak = tf.argmax(spec)
+    signal = (tf.reduce_sum(spec[fre_peak-fre_window:fre_peak+fre_window]) + tf.reduce_sum(spec[2*fre_peak-fre_window:2*fre_peak+fre_window]))/14
+    noise = (tf.reduce_sum(spec[50:fre_peak-fre_window]) + tf.reduce_sum(spec[fre_peak+fre_window:2*fre_peak-fre_window]) + tf.reduce_sum(spec[2*fre_peak+fre_window+fre_window:280]))/(230-10)
+    SNR = 1-signal/(signal+noise)
+    return SNR
+
+
+example_num = testing_x.shape[0] # the number of training examples
+idx_num = 50  # samping HRNet's weights for 50 times
+prediction=np.zeros(idx_num)  # Predictive HR values for each testing example
+uncertainty=np.zeros(idx_num) # Predictive HR uncertainty for each testing example
+# entropy=np.zeros(idx_num)
+spectrum = np.zeros([example_num, 900]) # predictive frequency spectrum
+prediction_mag = np.zeros(example_num) # Predictive HR values for all the testing examples
+uncertianty_mag = np.zeros(example_num) # Predictive HR uncertainty for all the testing examples
+lable_mag = np.zeros(example_num) # HR labels
+                                
+
+## Test HRNet, with an output of HR values and uncertainty
+for example in range(example_num):
+    for idx in range(idx_num):
+        y_pre = model_real(testing_x[example:example+1,:,:,:])
+        prediction[idx] = tf.argmax(y_pre[0,:])
+        uncertainty[idx] = fre_uncertianty (y_pre[0,:])
+        # entropy[idx] = tf.entropy(y_pre[0,:])
+        # print(
+        #     f"example: {example}, "
+        #     f"idx: {idx}, "
+        #     f"Output: {tf.argmax(y_mean[0,:])}, "
+        #     f"Label: {tf.argmax(testing_y[0,:])}, "
+        #     f"Entropy: {y_entropy[0]}, "
+        #     f"Error: {tf.abs(tf.argmax(y_mean[0,:])-tf.argmax(testing_y[0,:]))}, "
+        # )
+    prediction_mag [example] = tf.cast(tfp.stats.percentile(prediction, q=10.),dtype=tf.int32)
+    lable_mag [example] = tf.argmax(testing_y[example,:])
+    uncertianty_mag [example] = tf.squeeze(tf.reduce_mean(uncertainty))                  
+    spectrum[example,:] = y_pre[0,:]
+
+    
+    print(
+        f"example: {example}, "
+        f"Prediction: {tf.cast(tfp.stats.percentile(prediction, q=50.),dtype=tf.int32)}, "
+        f"Label: {tf.argmax(testing_y[example,:])}, "
+        f"Error: {tf.abs(tf.cast(tfp.stats.percentile(prediction, q=50.),dtype=tf.int64)-tf.argmax(testing_y[example,:]))}, "
+        f"Uncertianty: {tf.reduce_mean(uncertainty)}, "
+    ) 
